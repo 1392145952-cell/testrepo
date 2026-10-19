@@ -1,0 +1,1037 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>像素风机甲对战 · Mecha Brawl</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #0b0d14;
+    color: #e8e8e8;
+    font-family: "Courier New", Consolas, monospace;
+    overflow: hidden;
+  }
+  #wrap {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    height: 100vh; gap: 12px;
+  }
+  h1 {
+    margin: 0; font-size: 18px; letter-spacing: 4px;
+    color: #ffd23f; text-shadow: 2px 2px 0 #c24b3b;
+  }
+  canvas#game {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    background: #000;
+    box-shadow: 0 0 0 4px #222, 0 0 40px rgba(255,210,63,0.15);
+  }
+  #hint {
+    font-size: 12px; color: #8c94a7; text-align: center; line-height: 1.6;
+  }
+  kbd {
+    background: #1c2030; border: 1px solid #3a3f54; border-radius: 3px;
+    padding: 1px 6px; font-size: 11px; color: #cfd6e6;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1>像素风机甲对战 · MECHA BRAWL</h1>
+  <canvas id="game" width="320" height="180"></canvas>
+  <div id="hint">
+    <span style="color:#ff6b6b">1P 赤色风暴</span>
+    移动 <kbd>A</kbd>/<kbd>D</kbd>  跳跃 <kbd>W</kbd>  近战 <kbd>F</kbd>  远程 <kbd>G</kbd>  防御 <kbd>S</kbd>
+    &nbsp;&nbsp;|&nbsp;&nbsp;
+    <span style="color:#5ab4ff">2P 蓝色闪电</span>
+    移动 <kbd>←</kbd>/<kbd>→</kbd>  跳跃 <kbd>↑</kbd>  近战 <kbd>K</kbd>  远程 <kbd>L</kbd>  防御 <kbd>↓</kbd>
+    <br>按 <kbd>Enter</kbd> 开始 / 重开 &nbsp; <kbd>P</kbd> 暂停
+  </div>
+</div>
+
+<script>
+/* ============================================================
+ *  像素风机甲对战 Demo —— 原生 JS + Canvas
+ *  所有精灵图均由代码按像素矩阵生成，零外部素材
+ * ============================================================ */
+
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+
+  // 内部逻辑分辨率 320x180，CSS 放大 3x 显示
+  const W = canvas.width;   // 320
+  const H = canvas.height;  // 180
+  const GROUND_Y = 152;     // 地面高度
+
+  /* ---------- 工具 ---------- */
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const rectOverlap = (a, b) =>
+    a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+
+  /* ============================================================
+   *  程序化像素精灵生成器
+   *  每个机甲由一张多帧的像素矩阵组成
+   *  字符映射: . = 透明, 其他字符 = 调色板下标
+   * ============================================================ */
+  function buildSprite(rows, palette) {
+    const h = rows.length;
+    const w = rows[0].length;
+    const img = document.createElement('canvas');
+    img.width = w; img.height = h;
+    const ictx = img.getContext('2d');
+    const data = ictx.createImageData(w, h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const ch = rows[y][x];
+        const idx = ch === '.' ? -1 : parseInt(ch, 36);
+        let r = 0, g = 0, b = 0, a = 0;
+        if (idx >= 0 && palette[idx]) {
+          r = palette[idx][0]; g = palette[idx][1]; b = palette[idx][2]; a = 255;
+        }
+        const i = (y * w + x) * 4;
+        data.data[i] = r; data.data[i+1] = g; data.data[i+2] = b; data.data[i+3] = a;
+      }
+    }
+    ictx.putImageData(data, 0, 0);
+    return { canvas: img, w, h };
+  }
+
+  /* ---- 赤色风暴 REDSTORM（重甲型，伤害高速度慢） ---- */
+  const RED_PALETTE = [
+    [20,20,28],      // 0 轮廓
+    [196,48,48],     // 1 主红
+    [255,90,90],     // 2 亮红
+    [102,24,24],     // 3 暗红
+    [230,230,230],   // 4 金属
+    [110,110,120],   // 5 暗金属
+    [255,210,63],    // 6 眼部黄
+    [255,255,255],   // 7 白
+  ];
+  // 尺寸 20x24
+  const RED_IDLE = [
+    '....000000000000....',
+    '...0444444444440....',
+    '..041111111111440...',
+    '..041661111111440...',
+    '..041111116611440...',
+    '..041111111111440...',
+    '...0422222222240....',
+    '...0423333333240....',
+    '..044222222222440...',
+    '.04114444444441140..',
+    '.04115555555541140..',
+    '.04114444444441140..',
+    '.04115555555541140..',
+    '.04444444444444440..',
+    '..041111111111440...',
+    '..041111111111440...',
+    '..041111111111440...',
+    '..041111111111440...',
+    '..041144444411440...',
+    '..04110....011440...',
+    '..04440....04440....',
+    '..04440....04440....',
+    '..04770....07740....',
+    '..00000....00000....',
+  ];
+  // 行走帧 2：腿交错
+  const RED_WALK2 = [
+    '....000000000000....',
+    '...0444444444440....',
+    '..041111111111440...',
+    '..041661111111440...',
+    '..041111116611440...',
+    '..041111111111440...',
+    '...0422222222240....',
+    '...0423333333240....',
+    '..044222222222440...',
+    '.04114444444441140..',
+    '.04115555555541140..',
+    '.04114444444441140..',
+    '.04115555555541140..',
+    '.04444444444444440..',
+    '..041111111111440...',
+    '..041111111111440...',
+    '..041111111111440...',
+    '..041111111111440...',
+    '..041144444411440...',
+    '.044110....011440...',
+    '.04440......04440...',
+    '04440........04440..',
+    '0770..........0770..',
+    '0000..........0000..',
+  ];
+  // 攻击帧（右臂伸出光剑）
+  const RED_ATTACK = [
+    '....0000000000000000',
+    '...044444444444006666',
+    '..041111111111440677776',
+    '..041661111111440677776',
+    '..04111111661144006666',
+    '..041111111111440....',
+    '...0422222222240.....',
+    '...0423333333240.....',
+    '..044222222222440....',
+    '.04114444444441140...',
+    '.04115555555541140...',
+    '.04114444444441140...',
+    '.04115555555541140...',
+    '.04444444444444440...',
+    '..041111111111440....',
+    '..041111111111440....',
+    '..041111111111440....',
+    '..041111111111440....',
+    '..041144444411440....',
+    '..04110....011440....',
+    '..04440....04440.....',
+    '..04440....04440.....',
+    '..04770....07740.....',
+    '..00000....00000.....',
+  ];
+  // 跳跃帧
+  const RED_JUMP = [
+    '....000000000000....',
+    '...0444444444440....',
+    '..041111111111440...',
+    '..041661111111440...',
+    '..041111116611440...',
+    '..041111111111440...',
+    '...0422222222240....',
+    '...0423333333240....',
+    '..044222222222440...',
+    '.04114444444441140..',
+    '.04115555555541140..',
+    '.04114444444441140..',
+    '.04115555555541140..',
+    '.04444444444444440..',
+    '..041111111111440...',
+    '..041111111111440...',
+    '..041111111111440...',
+    '..041111111111440...',
+    '..041144444411440...',
+    '..04440....04440....',
+    '.04440......04440...',
+    '04440........04440..',
+    '0770..........0770..',
+    '0000..........0000..',
+  ];
+  // 防御帧（举盾在前）
+  const RED_GUARD = [
+    '....000000000000....',
+    '...0444444444440....',
+    '..041111111111440...',
+    '..041661111111440...',
+    '..041111116611440...',
+    '..041111111111440...',
+    '...0422222222240....',
+    '.000042333333240000.',
+    '.044022222222400000.',
+    '.011404444444041140.',
+    '.011405555555041140.',
+    '.011404444444041140.',
+    '.011405555555041140.',
+    '.044404444444044440.',
+    '.000041111111400000.',
+    '...0411111111440....',
+    '...0411111111440....',
+    '...0411111111440....',
+    '...0411444441140....',
+    '...04110..011440....',
+    '...04440..04440.....',
+    '...04440..04440.....',
+    '...04770..07740.....',
+    '...00000..00000.....',
+  ];
+
+  /* ---- 蓝色闪电 BLUESTREAK（敏捷型，速度快伤害低） ---- */
+  const BLUE_PALETTE = [
+    [20,20,28],      // 0 轮廓
+    [58,120,220],    // 1 主蓝
+    [120,190,255],   // 2 亮蓝
+    [28,60,130],     // 3 暗蓝
+    [230,230,230],   // 4 金属
+    [110,110,120],   // 5 暗金属
+    [255,240,120],   // 6 眼部
+    [255,255,255],   // 7 白
+    [180,80,255],    // 8 能量紫
+  ];
+  // 18x24（比红色略瘦）
+  const BLUE_IDLE = [
+    '...000000000000....',
+    '..04444444444440...',
+    '.0411111111111140..',
+    '.0416611111111140..',
+    '.0411111166111140..',
+    '.0411111111111140..',
+    '..042222222222240..',
+    '..042333333333240..',
+    '.04422222222222440.',
+    '.041144444444441140',
+    '.041155555555541140',
+    '.041144444444441140',
+    '.041155555555541140',
+    '.044444444444444440',
+    '..0411111111111440.',
+    '..0411111111111440.',
+    '..0411111111111440.',
+    '..0411111111111440.',
+    '..041144444411440..',
+    '..04110....011440..',
+    '..04440....04440...',
+    '..04440....04440...',
+    '..04770....07740...',
+    '..00000....00000...',
+  ];
+  const BLUE_WALK2 = [
+    '...000000000000....',
+    '..04444444444440...',
+    '.0411111111111140..',
+    '.0416611111111140..',
+    '.0411111166111140..',
+    '.0411111111111140..',
+    '..042222222222240..',
+    '..042333333333240..',
+    '.04422222222222440.',
+    '.041144444444441140',
+    '.041155555555541140',
+    '.041144444444441140',
+    '.041155555555541140',
+    '.044444444444444440',
+    '..0411111111111440.',
+    '..0411111111111440.',
+    '..0411111111111440.',
+    '..0411111111111440.',
+    '..041144444411440..',
+    '.044110....011440..',
+    '.04440......04440..',
+    '04440........04440.',
+    '0770..........0770..',
+    '0000..........0000..',
+  ];
+  const BLUE_ATTACK = [
+    '...0000000000000088',
+    '..044444444444408888',
+    '.04111111111111408888',
+    '.0416611111111140888',
+    '.041111116611114088',
+    '.04111111111111408.',
+    '..042222222222240..',
+    '..042333333333240..',
+    '.04422222222222440.',
+    '.041144444444441140',
+    '.041155555555541140',
+    '.041144444444441140',
+    '.041155555555541140',
+    '.044444444444444440',
+    '..0411111111111440.',
+    '..0411111111111440.',
+    '..0411111111111440.',
+    '..0411111111111440.',
+    '..041144444411440..',
+    '..04110....011440..',
+    '..04440....04440...',
+    '..04440....04440...',
+    '..04770....07740...',
+    '..00000....00000...',
+  ];
+  const BLUE_JUMP = [
+    '...000000000000....',
+    '..04444444444440...',
+    '.0411111111111140..',
+    '.0416611111111140..',
+    '.0411111166111140..',
+    '.0411111111111140..',
+    '..042222222222240..',
+    '..042333333333240..',
+    '.04422222222222440.',
+    '.041144444444441140',
+    '.041155555555541140',
+    '.041144444444441140',
+    '.041155555555541140',
+    '.044444444444444440',
+    '..0411111111111440.',
+    '..0411111111111440.',
+    '..0411111111111440.',
+    '..0411111111111440.',
+    '..041144444411440..',
+    '..04440....04440...',
+    '.04440......04440..',
+    '04440........04440.',
+    '0770..........0770..',
+    '0000..........0000..',
+  ];
+  const BLUE_GUARD = [
+    '...000000000000....',
+    '..04444444444440...',
+    '.0411111111111140..',
+    '.0416611111111140..',
+    '.0411111166111140..',
+    '.0411111111111140..',
+    '..042222222222240..',
+    '000423333333324000.',
+    '044022222222224000.',
+    '0114044444444041140',
+    '0114055555555041140',
+    '0114044444444041140',
+    '0114055555555041140',
+    '0444044444444044440',
+    '000041111111114000.',
+    '...0411111111440...',
+    '...0411111111440...',
+    '...0411111111440...',
+    '...0411444411440...',
+    '...04110..011440...',
+    '...04440..04440....',
+    '...04440..04440....',
+    '...04770..07740....',
+    '...00000..00000....',
+  ];
+
+  /* ---- 红色攻击帧宽度较大（带光剑延伸），统一用 max(w) 并按中心对齐 ---- */
+  function packFrames(arrays, palette) {
+    const sprites = arrays.map(a => buildSprite(a, palette));
+    const maxW = Math.max(...sprites.map(s => s.w));
+    const h = sprites[0].h;
+    // 把每帧画到统一画布上，左对齐
+    const sheet = document.createElement('canvas');
+    sheet.width = maxW * sprites.length;
+    sheet.height = h;
+    const sctx = sheet.getContext('2d');
+    sprites.forEach((s, i) => sctx.drawImage(s.canvas, i * maxW, 0));
+    return { sheet, frameW: maxW, frameH: h, count: sprites.length };
+  }
+
+  const RED_SPR = packFrames([RED_IDLE, RED_WALK2, RED_ATTACK, RED_JUMP, RED_GUARD], RED_PALETTE);
+  const BLUE_SPR = packFrames([BLUE_IDLE, BLUE_WALK2, BLUE_ATTACK, BLUE_JUMP, BLUE_GUARD], BLUE_PALETTE);
+  // 帧下标映射
+  const F_IDLE = 0, F_WALK = 1, F_ATTACK = 2, F_JUMP = 3, F_GUARD = 4;
+
+  /* ============================================================
+   *  输入系统
+   * ============================================================ */
+  const keys = {};
+  window.addEventListener('keydown', e => {
+    keys[e.code] = true;
+    // 防止方向键/空格滚动
+    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
+    if (e.code === 'Enter') {
+      if (game.state === 'title' || game.state === 'ko') startRound();
+    }
+    if (e.code === 'KeyP') {
+      if (game.state === 'fight') game.state = 'paused';
+      else if (game.state === 'paused') game.state = 'fight';
+    }
+  });
+  window.addEventListener('keyup', e => { keys[e.code] = false; });
+
+  /* ============================================================
+   *  机甲类
+   * ============================================================ */
+  const GRAVITY = 0.35;
+  class Mecha {
+    constructor(opts) {
+      Object.assign(this, opts);
+      this.vx = 0; this.vy = 0;
+      this.onGround = true;
+      this.facing = this.facing || 1;        // 1 右, -1 左
+      this.hp = this.maxHp;
+      this.state = 'idle';                    // idle/walk/jump/attack/guard/hurt/ko
+      this.frame = F_IDLE;
+      this.frameTime = 0;
+      this.attackTimer = 0;                   // 攻击动画剩余
+      this.attackCooldown = 0;
+      this.shootCooldown = 0;
+      this.hurtTimer = 0;
+      this.hitFlash = 0;
+      this.guarding = false;
+      this.ai = opts.ai || false;
+      this.aiTimer = 0;
+    }
+    get rect() {
+      // 碰撞盒略小于精灵，贴近身体中心
+      const w = 14, h = 22;
+      return { x: this.x - w/2, y: this.y - h, w, h };
+    }
+    get sprite() { return this.color === 'red' ? RED_SPR : BLUE_SPR; }
+    update(dt, opponent) {
+      if (this.state === 'ko') return;
+
+      // AI 或玩家输入
+      let input = { left:false, right:false, jump:false, attack:false, shoot:false, guard:false };
+      if (this.ai) {
+        input = this.think(opponent);
+      } else {
+        input = this.readKeys();
+      }
+
+      // 冷却递减
+      this.attackCooldown = Math.max(0, this.attackCooldown - dt);
+      this.shootCooldown  = Math.max(0, this.shootCooldown  - dt);
+      this.hurtTimer      = Math.max(0, this.hurtTimer      - dt);
+      this.hitFlash       = Math.max(0, this.hitFlash       - dt);
+
+      const canAct = this.hurtTimer <= 0 && this.attackTimer <= 0 && this.state !== 'ko';
+
+      // 防御：按住减速+减伤
+      this.guarding = input.guard && this.onGround && canAct;
+
+      // 水平移动
+      const speed = this.guarding ? this.speed * 0.35 : this.speed;
+      this.vx = 0;
+      if (canAct) {
+        if (input.left)  { this.vx = -speed; this.facing = -1; }
+        if (input.right) { this.vx =  speed; this.facing =  1; }
+      }
+      // 自动面向对手（防御时除外，保持按下方向）
+      if (canAct && !this.guarding) {
+        if (opponent.x > this.x + 2) this.facing = 1;
+        else if (opponent.x < this.x - 2) this.facing = -1;
+      }
+
+      // 跳跃
+      if (canAct && input.jump && this.onGround) {
+        this.vy = -6.2;
+        this.onGround = false;
+      }
+
+      // 攻击
+      if (canAct && !this.guarding) {
+        if (input.attack && this.attackCooldown <= 0) {
+          this.attackTimer = this.attackTime;
+          this.attackCooldown = this.attackCooldownMax;
+          this.state = 'attack';
+        } else if (input.shoot && this.shootCooldown <= 0) {
+          this.shootCooldown = this.shootCooldownMax;
+          spawnProjectile(this, opponent);
+        }
+      }
+
+      // 应用重力
+      this.vy += GRAVITY;
+      this.x += this.vx;
+      this.y += this.vy;
+
+      // 地面 / 边界
+      if (this.y >= GROUND_Y) {
+        this.y = GROUND_Y;
+        this.vy = 0;
+        this.onGround = true;
+      } else {
+        this.onGround = false;
+      }
+      this.x = clamp(this.x, 14, W - 14);
+
+      // 推挤分离
+      const dx = opponent.x - this.x;
+      const minDist = 14;
+      if (Math.abs(dx) < minDist && Math.abs(opponent.y - this.y) < 20) {
+        const push = (minDist - Math.abs(dx)) / 2;
+        if (dx >= 0) { this.x -= push; opponent.x += push; }
+        else         { this.x += push; opponent.x -= push; }
+      }
+
+      // 状态机 → 帧
+      if (this.attackTimer > 0) {
+        this.state = 'attack';
+        this.frame = F_ATTACK;
+        this.attackTimer -= dt;
+        // 在攻击帧中段（30%~70%）判定一次命中
+        const atkProgress = 1 - this.attackTimer / this.attackTime;
+        if (!this._hitDone && atkProgress > 0.3 && atkProgress < 0.7) {
+          this._hitDone = true;
+          this.doMeleeHit(opponent);
+        }
+        if (this.attackTimer <= 0) this._hitDone = false;
+      } else if (this.hurtTimer > 0) {
+        this.state = 'hurt';
+      } else if (this.guarding) {
+        this.state = 'guard'; this.frame = F_GUARD;
+      } else if (!this.onGround) {
+        this.state = 'jump'; this.frame = F_JUMP;
+      } else if (Math.abs(this.vx) > 0.1) {
+        this.state = 'walk';
+        this.frameTime += dt;
+        // 2 帧循环
+        this.frame = Math.floor(this.frameTime * 8) % 2 === 0 ? F_IDLE : F_WALK;
+      } else {
+        this.state = 'idle'; this.frame = F_IDLE; this.frameTime = 0;
+      }
+    }
+
+    readKeys() {
+      if (this.color === 'red') {
+        return {
+          left:   keys['KeyA'],
+          right:  keys['KeyD'],
+          jump:   keys['KeyW'],
+          attack: keys['KeyF'],
+          shoot:  keys['KeyG'],
+          guard:  keys['KeyS'],
+        };
+      } else {
+        return {
+          left:   keys['ArrowLeft'],
+          right:  keys['ArrowRight'],
+          jump:   keys['ArrowUp'],
+          attack: keys['KeyK'],
+          shoot:  keys['KeyL'],
+          guard:  keys['ArrowDown'],
+        };
+      }
+    }
+
+    think(opp) {
+      this.aiTimer -= 1/60;
+      const input = { left:false, right:false, jump:false, attack:false, shoot:false, guard:false };
+      const dx = opp.x - this.x;
+      const dist = Math.abs(dx);
+      if (this.aiTimer <= 0) {
+        this.aiAction = Math.random();
+        this.aiTimer = 0.3 + Math.random() * 0.5;
+      }
+      if (this.aiAction < 0.15 && dist > 60) input.shoot = true;
+      else if (this.aiAction < 0.45 && dist < 40) input.attack = true;
+      else if (this.aiAction < 0.6) { input.left = dx < 0; input.right = dx > 0; }
+      else if (this.aiAction < 0.8) { input.left = dx > 0; input.right = dx < 0; } // 后退
+      else if (this.aiAction < 0.9 && this.onGround && Math.random() < 0.02) input.jump = true;
+      else if (this.aiAction < 1.0) input.guard = Math.random() < 0.3;
+      return input;
+    }
+
+    doMeleeHit(opp) {
+      // 攻击判定盒：身前 16px，高度覆盖身体上半
+      const reach = 18;
+      const hb = {
+        x: this.facing === 1 ? this.x : this.x - reach,
+        y: this.y - 22,
+        w: reach, h: 20
+      };
+      if (rectOverlap(hb, opp.rect)) {
+        opp.takeHit(this.meleeDamage, this.facing * 2.5);
+        spawnHitFX(opp.x, opp.y - 12);
+      }
+    }
+
+    takeHit(dmg, knockX) {
+      if (this.state === 'ko') return;
+      // 防御：大幅减伤 + 不硬直
+      if (this.guarding) {
+        dmg = Math.max(1, Math.round(dmg * 0.25));
+        this.hp = Math.max(0, this.hp - dmg);
+        this.hitFlash = 6;
+        spawnBlockFX(this.x, this.y - 14);
+      } else {
+        this.hp = Math.max(0, this.hp - dmg);
+        this.vx = knockX;
+        this.vy = -2;
+        this.hurtTimer = 0.25;
+        this.hitFlash = 8;
+        this.onGround = false;
+      }
+      if (this.hp <= 0) {
+        this.state = 'ko';
+        this.vx = 0; this.vy = -5;
+      }
+    }
+
+    draw() {
+      const spr = this.sprite;
+      const sx = this.frame * spr.frameW;
+      const sy = 0;
+      // 以脚底为锚点绘制
+      const drawX = Math.round(this.x - spr.frameW / 2);
+      const drawY = Math.round(this.y - spr.frameH);
+      ctx.save();
+      if (this.facing === -1) {
+        ctx.translate(drawX + spr.frameW, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(spr.sheet, sx, sy, spr.frameW, spr.frameH,
+                      0, drawY, spr.frameW, spr.frameH);
+      } else {
+        ctx.drawImage(spr.sheet, sx, sy, spr.frameW, spr.frameH,
+                      drawX, drawY, spr.frameW, spr.frameH);
+      }
+      // 受击闪白
+      if (this.hitFlash > 0 && Math.floor(this.hitFlash) % 2 === 0) {
+        ctx.globalCompositeOperation = 'source-atop';
+        ctx.fillStyle = 'rgba(255,255,255,0.8)';
+        ctx.fillRect(drawX - 2, drawY - 2, spr.frameW + 4, spr.frameH + 4);
+      }
+      ctx.restore();
+
+      // 防御盾光
+      if (this.guarding) {
+        ctx.fillStyle = 'rgba(120,200,255,0.25)';
+        ctx.strokeStyle = '#78c8ff';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(this.x + this.facing * 8, this.y - 12, 12, -Math.PI/2, Math.PI/2, this.facing === -1);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
+  }
+
+  /* ============================================================
+   *  投射物（远程能量弹）
+   * ============================================================ */
+  const projectiles = [];
+  function spawnProjectile(from, opp) {
+    projectiles.push({
+      x: from.x + from.facing * 10,
+      y: from.y - 14,
+      vx: from.facing * 4.2,
+      owner: from,
+      color: from.color === 'red' ? '#ff6b6b' : '#5ab4ff',
+      trail: [],
+      life: 80,
+    });
+  }
+  function updateProjectiles(opponent) {
+    for (let i = projectiles.length - 1; i >= 0; i--) {
+      const p = projectiles[i];
+      p.trail.push({ x: p.x, y: p.y });
+      if (p.trail.length > 6) p.trail.shift();
+      p.x += p.vx;
+      p.life--;
+      if (p.x < 0 || p.x > W || p.life <= 0) { projectiles.splice(i,1); continue; }
+      const hb = { x: p.x - 3, y: p.y - 3, w: 6, h: 6 };
+      // 只打对手（投射物的 owner 对面）
+      const target = p.owner === players[0] ? players[1] : players[0];
+      if (target && rectOverlap(hb, target.rect)) {
+        target.takeHit(p.owner.shootDamage, Math.sign(p.vx) * 1.8);
+        spawnHitFX(p.x, p.y);
+        projectiles.splice(i,1);
+      }
+    }
+  }
+  function drawProjectiles() {
+    for (const p of projectiles) {
+      for (let i = 0; i < p.trail.length; i++) {
+        const t = p.trail[i];
+        const a = (i+1) / p.trail.length;
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = a * 0.4;
+        ctx.fillRect(Math.round(t.x)-1, Math.round(t.y)-1, 2, 2);
+      }
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(Math.round(p.x)-2, Math.round(p.y)-2, 4, 4);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(Math.round(p.x)-1, Math.round(p.y)-1, 2, 2);
+    }
+  }
+
+  /* ============================================================
+   *  特效（粒子）
+   * ============================================================ */
+  const particles = [];
+  function spawnHitFX(x, y) {
+    for (let i = 0; i < 10; i++) {
+      particles.push({
+        x, y,
+        vx: (Math.random() - 0.5) * 4,
+        vy: (Math.random() - 0.5) * 4 - 1,
+        life: 18, color: ['#ffe94f','#ff9a3c','#ffffff'][i%3],
+      });
+    }
+  }
+  function spawnBlockFX(x, y) {
+    for (let i = 0; i < 8; i++) {
+      particles.push({
+        x, y,
+        vx: (Math.random() - 0.5) * 3,
+        vy: -Math.random() * 2,
+        life: 14, color: '#78c8ff',
+      });
+    }
+  }
+  function updateParticles() {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x += p.vx; p.y += p.vy; p.vy += 0.15; p.life--;
+      if (p.life <= 0) particles.splice(i,1);
+    }
+  }
+  function drawParticles() {
+    for (const p of particles) {
+      ctx.fillStyle = p.color;
+      ctx.fillRect(Math.round(p.x), Math.round(p.y), 2, 2);
+    }
+  }
+
+  /* ============================================================
+   *  场景（像素风背景）
+   * ============================================================ */
+  // 远景山缓存
+  const BG_LAYERS = (() => {
+    const sky = ctx.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0, '#2a1b4a');
+    sky.addColorStop(0.6, '#4a2560');
+    sky.addColorStop(1, '#7a3a55');
+
+    // 远山（程序化轮廓）
+    const far = document.createElement('canvas');
+    far.width = W; far.height = H;
+    const fctx = far.getContext('2d');
+    fctx.fillStyle = '#2b1d3a';
+    fctx.beginPath();
+    fctx.moveTo(0, 120);
+    let x = 0;
+    let y = 120;
+    while (x < W) {
+      x += 10 + Math.floor(Math.random() * 30);
+      y = 80 + Math.floor(Math.random() * 40);
+      fctx.lineTo(x, y);
+    }
+    fctx.lineTo(W, 120); fctx.lineTo(W, H); fctx.lineTo(0, H);
+    fctx.closePath(); fctx.fill();
+
+    // 近山
+    const near = document.createElement('canvas');
+    near.width = W; near.height = H;
+    const nctx = near.getContext('2d');
+    nctx.fillStyle = '#1a1228';
+    nctx.beginPath();
+    nctx.moveTo(0, 140);
+    x = 0; y = 140;
+    while (x < W) {
+      x += 12 + Math.floor(Math.random() * 24);
+      y = 110 + Math.floor(Math.random() * 25);
+      nctx.lineTo(x, y);
+    }
+    nctx.lineTo(W, 140); nctx.lineTo(W, H); nctx.lineTo(0, H);
+    nctx.closePath(); nctx.fill();
+
+    // 星星
+    const stars = [];
+    for (let i = 0; i < 50; i++) {
+      stars.push({ x: Math.random() * W, y: Math.random() * 80, b: Math.random() });
+    }
+
+    // 地面（深色金属板 + 铆钉）
+    const ground = document.createElement('canvas');
+    ground.width = W; ground.height = 30;
+    const gctx = ground.getContext('2d');
+    gctx.fillStyle = '#14141c';
+    gctx.fillRect(0, 0, W, 30);
+    gctx.fillStyle = '#1e1e2a';
+    for (let i = 0; i < W; i += 16) gctx.fillRect(i, 0, 15, 2);
+    gctx.fillStyle = '#09090e';
+    for (let i = 0; i < W; i += 16) gctx.fillRect(i, 2, 1, 28);
+    gctx.fillStyle = '#444';
+    for (let i = 8; i < W; i += 32) gctx.fillRect(i, 20, 2, 2);
+
+    return { sky, far, near, stars, ground };
+  })();
+
+  let starsOffset = 0;
+  function drawBackground() {
+    // 天空渐变
+    ctx.fillStyle = BG_LAYERS.sky;
+    ctx.fillRect(0, 0, W, H);
+    // 星星（轻微闪烁）
+    starsOffset += 0.02;
+    for (const s of BG_LAYERS.stars) {
+      const twinkle = 0.5 + 0.5 * Math.sin(starsOffset + s.b * 10);
+      ctx.fillStyle = `rgba(255,255,255,${0.3 + 0.7 * twinkle * s.b})`;
+      ctx.fillRect(Math.floor(s.x), Math.floor(s.y), 1, 1);
+    }
+    // 远山
+    ctx.drawImage(BG_LAYERS.far, 0, 0);
+    // 近山
+    ctx.drawImage(BG_LAYERS.near, 0, 0);
+    // 地面
+    ctx.drawImage(BG_LAYERS.ground, 0, GROUND_Y - 2);
+  }
+
+  /* ============================================================
+   *  UI：血条、标题、KO
+   * ============================================================ */
+  function drawBar(x, y, w, h, hp, max, color, flip) {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(x - 1, y - 1, w + 2, h + 2);
+    ctx.fillStyle = '#222';
+    ctx.fillRect(x, y, w, h);
+    const pct = Math.max(0, hp / max);
+    const fw = Math.floor(w * pct);
+    ctx.fillStyle = color;
+    if (flip) ctx.fillRect(x + w - fw, y, fw, h);
+    else       ctx.fillRect(x, y, fw, h);
+    // 分段刻度
+    ctx.fillStyle = '#000';
+    for (let i = 1; i < 5; i++) {
+      const tx = flip ? x + w - Math.floor(w * i / 5) : x + Math.floor(w * i / 5);
+      ctx.fillRect(tx, y, 1, h);
+    }
+  }
+  function drawUI() {
+    // 血量
+    drawBar(12, 10, 120, 10, players[0].hp, players[0].maxHp, '#ff4d4d', false);
+    drawBar(W - 132, 10, 120, 10, players[1].hp, players[1].maxHp, '#4db4ff', true);
+    // 名字
+    ctx.font = '7px "Courier New", monospace';
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'left';
+    ctx.fillText('1P  REDSTORM', 12, 28);
+    ctx.textAlign = 'right';
+    ctx.fillText('2P  BLUESTREAK', W - 12, 28);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ffd23f';
+    ctx.font = 'bold 10px "Courier New", monospace';
+    ctx.fillText(`VS`, W / 2, 20);
+
+    // 倒计时 / 标题 / KO
+    if (game.state === 'title') drawTitle();
+    if (game.state === 'ready') drawReady();
+    if (game.state === 'ko') drawKO();
+    if (game.state === 'paused') {
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#ffd23f';
+      ctx.font = 'bold 14px "Courier New", monospace';
+      ctx.fillText('PAUSED', W/2, H/2);
+      ctx.font = '8px monospace';
+      ctx.fillStyle = '#fff';
+      ctx.fillText('按 P 继续', W/2, H/2 + 14);
+    }
+  }
+  function drawTitle() {
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(0, 50, W, 80);
+    ctx.fillStyle = '#ffd23f';
+    ctx.font = 'bold 18px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('MECHA BRAWL', W/2, 78);
+    ctx.fillStyle = '#ff6b6b';
+    ctx.font = '8px monospace';
+    ctx.fillText('像素风机甲对战 Demo', W/2, 92);
+    ctx.fillStyle = '#fff';
+    ctx.fillText('ENTER 开始  ·  P 暂停', W/2, 108);
+    ctx.fillStyle = '#8c94a7';
+    ctx.fillText('单人: 按 Enter 让 2P 用 AI 自动对战', W/2, 122);
+  }
+  function drawReady() {
+    ctx.fillStyle = '#ffd23f';
+    ctx.font = 'bold 20px monospace';
+    ctx.textAlign = 'center';
+    const n = Math.ceil(game.readyTimer);
+    if (n > 0) ctx.fillText(String(n), W/2, H/2);
+    else ctx.fillText('FIGHT!', W/2, H/2);
+  }
+  function drawKO() {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ffd23f';
+    ctx.font = 'bold 20px monospace';
+    ctx.fillText('K.O.!', W/2, H/2 - 10);
+    ctx.font = 'bold 12px monospace';
+    const winColor = game.winner === 0 ? '#ff6b6b' : '#5ab4ff';
+    ctx.fillStyle = winColor;
+    ctx.fillText(game.winner === 0 ? '1P  REDSTORM 胜利' : '2P  BLUESTREAK 胜利', W/2, H/2 + 8);
+    ctx.fillStyle = '#fff';
+    ctx.font = '8px monospace';
+    ctx.fillText('按 Enter 重新开始', W/2, H/2 + 24);
+  }
+
+  /* ============================================================
+   *  主循环
+   * ============================================================ */
+  const players = [null, null];
+  const game = { state: 'title', readyTimer: 0, winner: -1 };
+
+  function startRound() {
+    players[0] = new Mecha({
+      color: 'red',
+      x: 80, y: GROUND_Y,
+      speed: 1.7,
+      maxHp: 100,
+      meleeDamage: 12,
+      shootDamage: 8,
+      attackTime: 0.22,
+      attackCooldownMax: 0.45,
+      shootCooldownMax: 0.9,
+      facing: 1,
+    });
+    players[1] = new Mecha({
+      color: 'blue',
+      x: W - 80, y: GROUND_Y,
+      speed: 2.1,
+      maxHp: 80,
+      meleeDamage: 8,
+      shootDamage: 6,
+      attackTime: 0.18,
+      attackCooldownMax: 0.35,
+      shootCooldownMax: 0.7,
+      facing: -1,
+      ai: true,  // 默认 2P 是 AI —— 单文件 Demo 更方便；双人对战把它改成 false 即可
+    });
+    projectiles.length = 0;
+    particles.length = 0;
+    game.state = 'ready';
+    game.readyTimer = 3;
+    game.winner = -1;
+  }
+
+  let lastT = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.05, (now - lastT) / 1000);
+    lastT = now;
+
+    // 逻辑
+    if (game.state === 'ready') {
+      game.readyTimer -= dt;
+      if (game.readyTimer <= 0) game.state = 'fight';
+    } else if (game.state === 'fight') {
+      players[0].update(dt, players[1]);
+      players[1].update(dt, players[0]);
+      updateProjectiles();
+      updateParticles();
+      // KO 判定
+      if (players[0].state === 'ko' && players[1].state === 'ko') {
+        game.state = 'ko'; game.winner = -2; // 平局
+      } else if (players[0].hp <= 0) {
+        game.state = 'ko'; game.winner = 1;
+      } else if (players[1].hp <= 0) {
+        game.state = 'ko'; game.winner = 0;
+      }
+    } else if (game.state === 'ko') {
+      // KO 后继续让掉落动画播放
+      updateParticles();
+    }
+
+    // 渲染
+    drawBackground();
+    if (players[0]) {
+      // 先画较远的（按 y 排序，这里两个都在地面，固定顺序）
+      players[0].draw();
+      players[1].draw();
+      drawProjectiles();
+      drawParticles();
+    }
+    drawUI();
+
+    requestAnimationFrame(frame);
+  }
+
+  // 启动：不自动开始，显示标题
+  requestAnimationFrame(frame);
+
+  // 自适应 CSS 尺寸：让画布填满视窗但保持像素整数倍
+  function resize() {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const scale = Math.max(1, Math.floor(Math.min(vw / W, (vh - 120) / H)));
+    canvas.style.width  = (W * scale) + 'px';
+    canvas.style.height = (H * scale) + 'px';
+  }
+  window.addEventListener('resize', resize);
+  resize();
+})();
+</script>
+</body>
+</html>
